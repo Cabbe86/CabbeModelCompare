@@ -50,7 +50,6 @@ namespace Cabbe.Revit.Compare.Services
 
             if (categories == null || categories.Count == 0) return results;
 
-            var catFilters = categories.Select(c => (ElementFilter)new ElementMulticategoryFilter(new List<BuiltInCategory> { c })).ToList();
             ElementMulticategoryFilter multiCatFilter = new ElementMulticategoryFilter(categories);
 
             // Host elements
@@ -242,10 +241,9 @@ namespace Cabbe.Revit.Compare.Services
 
             Color green = new Color(39, 174, 96);    // #27AE60 Tillagd
             Color orange = new Color(230, 126, 34);  // #E67E22 Ändrad
-            Color gray = new Color(149, 165, 166);   // #95A5A6 Dämpad
 
-            var ogsAdded = CreateOgs(green, solidFillId.Value, 0);
-            var ogsModified = CreateOgs(orange, solidFillId.Value, 0);
+            var ogsAdded = CreateOgs(green, solidFillId, 0);
+            var ogsModified = CreateOgs(orange, solidFillId, 0);
             var ogsUnchanged = new OverrideGraphicSettings();
             ogsUnchanged.SetHalftone(true);
 
@@ -269,7 +267,7 @@ namespace Cabbe.Revit.Compare.Services
             }
 
             // 2. Generate Ghost DirectShapes for Removed Elements (Red #E74C3C)
-            CreateGhostDirectShapes(view, items.Where(i => i.Status == ComparisonStatus.Removed), linkInstance, solidFillId.Value);
+            CreateGhostDirectShapes(view, items.Where(i => i.Status == ComparisonStatus.Removed), linkInstance, solidFillId);
         }
 
         private OverrideGraphicSettings CreateOgs(Color color, ElementId fillId, int transparency)
@@ -390,7 +388,7 @@ namespace Cabbe.Revit.Compare.Services
             return new FilteredElementCollector(_doc)
                 .OfClass(typeof(FillPatternElement))
                 .Cast<FillPatternElement>()
-                .FirstOrDefault(fp => fp.GetFillPattern().IsSolid)?.Id;
+                .FirstOrDefault(fp => fp.GetFillPattern().IsSolidFill)?.Id;
         }
     }
 }
