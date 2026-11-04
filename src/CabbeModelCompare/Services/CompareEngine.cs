@@ -589,7 +589,7 @@ namespace Cabbe.Revit.Compare.Services
 
         public DirectShape? GetOrCreateGhostDirectShape(View view, ComparisonItem item, RevitLinkInstance linkInstance, ElementId? fillId = null, Dictionary<string, DirectShape>? existingMap = null)
         {
-            if (item.LinkId == null || string.IsNullOrEmpty(item.UniqueId)) return null;
+            if (string.IsNullOrEmpty(item.UniqueId)) return null;
 
             string dsName = "CabbeCompare_Deleted_" + item.UniqueId;
             DirectShape? existing = null;
@@ -607,7 +607,7 @@ namespace Cabbe.Revit.Compare.Services
 
             fillId ??= GetSolidFillPatternId();
             Color redColor = new Color(231, 76, 60); // #E74C3C
-            var ogsRemoved = CreateOgs(redColor, fillId, 30); // 30% transparency for ghost effect
+            var ogsRemoved = CreateOgs(redColor, fillId, 30); // 30% transparens för spökeffekt
             ogsRemoved.SetProjectionLineWeight(4);
             ogsRemoved.SetCutLineWeight(4);
 
@@ -620,49 +620,57 @@ namespace Cabbe.Revit.Compare.Services
             Document linkDoc = linkInstance.GetLinkDocument();
             if (linkDoc == null) return null;
 
-            Element? linkElem = linkDoc.GetElement(item.LinkId);
+            Element? linkElem = item.LinkId != null ? linkDoc.GetElement(item.LinkId) : null;
+            if (linkElem == null && !string.IsNullOrEmpty(item.UniqueId))
+            {
+                linkElem = linkDoc.GetElement(item.UniqueId);
+            }
             if (linkElem == null) return null;
 
             Transform totalTransform = linkInstance.GetTotalTransform();
 
-            // Förbered bounding box för transformation
+            // 1. Extrahera eller beräkna BoundingBox i värddokumentets koordinater
+            XYZ? boxMin = null;
+            XYZ? boxMax = null;
+
             BoundingBoxXYZ? rawBbox = null;
             try { rawBbox = linkElem.get_BoundingBox(null); } catch { }
 
-            XYZ? boxMin = null;
-            XYZ? boxMax = null;
             if (rawBbox != null)
             {
-                XYZ pMin = totalTransform.OfPoint(rawBbox.Min);
-                XYZ pMax = totalTransform.OfPoint(rawBbox.Max);
-                boxMin = new XYZ(Math.Min(pMin.X, pMax.X), Math.Min(pMin.Y, pMax.Y), Math.Min(pMin.Z, pMax.Z));
-                boxMax = new XYZ(Math.Max(pMin.X, pMax.X), Math.Max(pMin.Y, pMax.Y), Math.Max(pMin.Z, pMax.Z));
-            }
-
-            // 1. Försök extrahera detaljerade solids från länkobjektet
-            List<GeometryObject> solids = new List<GeometryObject>();
-            try
-            {
-                Options opt = new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false };
-                GeometryElement geom = linkElem.get_Geometry(opt);
-                if (geom != null)
+                XYZ[] pts = new XYZ[8]
                 {
-                    ExtractSolids(geom, totalTransform, solids);
-                }
+                    totalTransform.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Min.Y, rawBbox.Min.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Min.Y, rawBbox.Min.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Max.Y, rawBbox.Min.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Max.Y, rawBbox.Min.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Min.Y, rawBbox.Max.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Min.Y, rawBbox.Max.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Max.Y, rawBbox.Max.Z)),
+                    totalTransform.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Max.Y, rawBbox.Max.Z)),
+                };
+                boxMin = new XYZ(pts.Min(p => p.X), pts.Min(p => p.Y), pts.Min(p => p.Z));
+                boxMax = new XYZ(pts.Max(p => p.X), pts.Max(p => p.Y), pts.Max(p => p.Z));
             }
-            catch { }
-
-            // 2. Fallback: Om inga solids hittades, skapa en 3D-box från elementets BoundingBox
-            if (solids.Count == 0 && boxMin != null && boxMax != null)
+            else if (linkElem.Location is LocationPoint lp)
             {
-                Solid? fallbackBox = CreateBoxSolid(boxMin, boxMax);
-                if (fallbackBox != null)
-                {
-                    solids.Add(fallbackBox);
-                }
+                XYZ pt = totalTransform.OfPoint(lp.Point);
+                boxMin = new XYZ(pt.X - 1.5, pt.Y - 1.5, pt.Z);
+                boxMax = new XYZ(pt.X + 1.5, pt.Y + 1.5, pt.Z + 7.0);
+            }
+            else if (linkElem.Location is LocationCurve lc)
+            {
+                XYZ p0 = totalTransform.OfPoint(lc.Curve.GetEndPoint(0));
+                XYZ p1 = totalTransform.OfPoint(lc.Curve.GetEndPoint(1));
+                boxMin = new XYZ(Math.Min(p0.X, p1.X) - 0.5, Math.Min(p0.Y, p1.Y) - 0.5, Math.Min(p0.Z, p1.Z));
+                boxMax = new XYZ(Math.Max(p0.X, p1.X) + 0.5, Math.Max(p0.Y, p1.Y) + 0.5, Math.Max(p0.Z, p1.Z) + 8.0);
             }
 
-            if (solids.Count == 0) return null;
+            if (boxMin == null || boxMax == null) return null;
+
+            // 2. Skapa en garanterat giltig 3D-solid (DirectShape Box)
+            Solid? boxSolid = CreateBoxSolid(boxMin, boxMax);
+            if (boxSolid == null) return null;
 
             // 3. Skapa DirectShape som GenericModel i värddokumentet
             try
@@ -672,38 +680,17 @@ namespace Cabbe.Revit.Compare.Services
                 ds.ApplicationDataId = item.UniqueId;
                 ds.Name = dsName;
 
-                bool shapeSet = false;
                 try
                 {
-                    ds.SetShape(solids);
-                    shapeSet = true;
+                    ds.SetShape(new List<GeometryObject> { boxSolid });
                 }
                 catch
                 {
-                    // Om detaljerad solid misslyckas i Revit (t.ex. icke-manifolderad geometri), använd 3D-box
-                    if (boxMin != null && boxMax != null)
-                    {
-                        Solid? fallbackBox = CreateBoxSolid(boxMin, boxMax);
-                        if (fallbackBox != null)
-                        {
-                            try
-                            {
-                                ds.SetShape(new List<GeometryObject> { fallbackBox });
-                                shapeSet = true;
-                            }
-                            catch { }
-                        }
-                    }
-                }
-
-                if (!shapeSet)
-                {
-                    // Kunde inte sätta geometrin
                     try { _doc.Delete(ds.Id); } catch { }
                     return null;
                 }
 
-                // Sätt rött spökmaterial på elementet så det syns i 3D och planvy
+                // Sätt rött spökmaterial på elementet
                 try
                 {
                     ElementId redMatId = GetOrCreateRedGhostMaterial();
@@ -715,7 +702,7 @@ namespace Cabbe.Revit.Compare.Services
                 }
                 catch { }
 
-                // Se till att kategorin Generic Model är synlig i aktuell vy
+                // Se till att Generic Models syns i aktuell vy
                 try
                 {
                     var catId = new ElementId(BuiltInCategory.OST_GenericModel);
