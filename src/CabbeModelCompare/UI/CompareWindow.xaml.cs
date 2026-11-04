@@ -86,6 +86,13 @@ namespace Cabbe.Revit.Compare.UI
             TxtStatus.Text = "Länklistan har uppdaterats.";
         }
 
+        private void ChkOnlyGeometry_Changed(object sender, RoutedEventArgs e)
+        {
+            if (TxtModifiedSub == null) return;
+            bool onlyGeom = ChkOnlyGeometry.IsChecked ?? true;
+            TxtModifiedSub.Text = onlyGeom ? "Geometrisk ändring i modellen" : "Geometri eller parametrar skiljer";
+        }
+
         private void BtnRunCompare_Click(object sender, RoutedEventArgs e)
         {
             var link = GetSelectedLink();
@@ -102,10 +109,15 @@ namespace Cabbe.Revit.Compare.UI
                 return;
             }
 
-            TxtStatus.Text = "Jämför modeller... Vänligen vänta.";
+            bool onlyGeom = ChkOnlyGeometry.IsChecked ?? true;
+            TxtStatus.Text = onlyGeom 
+                ? "Jämför geometriska skillnader... Vänligen vänta." 
+                : "Jämför geometri och parametrar... Vänligen vänta.";
+
             _eventHandler.PendingAction = CompareAction.RunCompare;
             _eventHandler.SelectedLink = link;
             _eventHandler.SelectedCategories = selectedCats;
+            _eventHandler.OnlyGeometry = onlyGeom;
             _externalEvent.Raise();
         }
 
@@ -123,7 +135,7 @@ namespace Cabbe.Revit.Compare.UI
                 TxtCountAdded.Text = $"+{added} Tillagda";
                 TxtCountModified.Text = $"~{modified} Ändrade";
                 TxtCountRemoved.Text = $"-{removed} Borttagna";
-                TxtCountTotal.Text = $"{total} Ändrade totalt";
+                TxtCountTotal.Text = $"{total} Totalt";
 
                 ApplyFilter();
             });
@@ -137,7 +149,6 @@ namespace Cabbe.Revit.Compare.UI
 
             var filtered = _allItems.Where(item =>
             {
-                // Dölj oförändrade i listan som standard såvida inte användaren specifikt söker
                 if (_activeStatusFilter == null && item.Status == ComparisonStatus.Unchanged)
                     return false;
 
@@ -206,10 +217,24 @@ namespace Cabbe.Revit.Compare.UI
             var link = GetSelectedLink();
             if (link == null) return;
 
-            TxtStatus.Text = "Applicerar ACC-färgkodning och spökobjekt...";
+            ViewColorMode mode = ViewColorMode.All;
+            if (CmbColorMode.SelectedItem is ComboBoxItem cbi && cbi.Tag is string tag)
+            {
+                mode = tag switch
+                {
+                    "AddedOnly" => ViewColorMode.AddedOnly,
+                    "ModifiedOnly" => ViewColorMode.ModifiedOnly,
+                    "RemovedOnly" => ViewColorMode.RemovedOnly,
+                    _ => ViewColorMode.All
+                };
+            }
+
+            TxtStatus.Text = "Applicerar färgkodning i aktuell vy...";
             _eventHandler.PendingAction = CompareAction.ApplyColors;
             _eventHandler.ComparisonItems = _allItems;
             _eventHandler.SelectedLink = link;
+            _eventHandler.ColorMode = mode;
+            _eventHandler.HalftoneUnchanged = ChkHalftone.IsChecked ?? true;
             _externalEvent.Raise();
         }
 
@@ -253,6 +278,7 @@ namespace Cabbe.Revit.Compare.UI
         {
             if (GridItems.SelectedItem is ComparisonItem item)
             {
+                TxtStatus.Text = $"Växlar till planvy och zoomar till {item.DisplayName}...";
                 _eventHandler.TargetItem = item;
                 _eventHandler.TargetElementId = item.HostId;
                 _eventHandler.SelectedLink = GetSelectedLink();

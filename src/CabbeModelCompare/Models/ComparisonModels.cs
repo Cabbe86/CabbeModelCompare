@@ -11,6 +11,14 @@ namespace Cabbe.Revit.Compare.Models
         Unchanged
     }
 
+    public enum ViewColorMode
+    {
+        All,          // Alla ändringar (Grön, Orange, Röd)
+        AddedOnly,    // Endast Tillagda (Grön)
+        ModifiedOnly, // Endast Ändrade (Orange)
+        RemovedOnly   // Endast Borttagna (Röd)
+    }
+
     public class ParameterDiff
     {
         public string ParameterName { get; set; } = string.Empty;

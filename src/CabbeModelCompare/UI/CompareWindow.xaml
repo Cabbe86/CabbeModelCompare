@@ -2,8 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Modelljämförelse (ACC-stil)" 
-        Height="760" Width="1080" 
-        MinHeight="600" MinWidth="850"
+        Height="780" Width="1120" 
+        MinHeight="620" MinWidth="900"
         WindowStartupLocation="CenterScreen"
         Background="#F4F6F9"
         FontFamily="Segoe UI">
@@ -70,7 +70,7 @@
             <RowDefinition Height="Auto"/> <!-- Header & Link Selector -->
             <RowDefinition Height="Auto"/> <!-- Summary Cards (ACC badges) -->
             <RowDefinition Height="*"/>    <!-- Main Content: Filters + Table -->
-            <RowDefinition Height="220"/>  <!-- Bottom Parameter Diff Inspector -->
+            <RowDefinition Height="220"/>  <!-- Bottom Parameter/Geometry Diff Inspector -->
             <RowDefinition Height="Auto"/> <!-- Status Bar -->
         </Grid.RowDefinitions>
 
@@ -89,21 +89,40 @@
                             <TextBlock Text="ACC-stil" FontSize="11" FontWeight="Bold" Foreground="#3730A3"/>
                         </Border>
                     </StackPanel>
-                    <TextBlock Text="Jämför aktiv RVT-modell mot en inlänkad version och se ändringar, tillägg och borttagna objekt." 
-                               FontSize="12" Foreground="#64748B" Margin="0,3,0,10"/>
+                    <TextBlock Text="Jämför aktiv RVT-modell mot en inlänkad version och se geometriska ändringar, tillägg och borttagna objekt." 
+                               FontSize="12" Foreground="#64748B" Margin="0,3,0,8"/>
 
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock Text="Jämför mot länk:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="#334155"/>
-                        <ComboBox x:Name="CmbLinks" Width="360" Height="32" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
-                        <Button Content="Ladda om länkar" Click="BtnRefreshLinks_Click" Style="{StaticResource SecondaryButton}" Height="32" Padding="10,4"/>
+                        <ComboBox x:Name="CmbLinks" Width="340" Height="30" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="Ladda om länkar" Click="BtnRefreshLinks_Click" Style="{StaticResource SecondaryButton}" Height="30" Padding="10,4"/>
                     </StackPanel>
+
+                    <CheckBox x:Name="ChkOnlyGeometry" Content="Endast geometriska ändringar (placering, yttermått, volym - ignorera parametrar)" 
+                              IsChecked="True" FontWeight="SemiBold" Foreground="#1E293B" Margin="0,8,0,0"
+                              Checked="ChkOnlyGeometry_Changed" Unchecked="ChkOnlyGeometry_Changed"/>
                 </StackPanel>
 
-                <!-- Action buttons -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="BtnRunCompare" Content="Kör jämförelse" Click="BtnRunCompare_Click" Style="{StaticResource ActionButton}" Height="36" Margin="0,0,8,0"/>
-                    <Button x:Name="BtnApplyColors" Content="Färga vy" Click="BtnApplyColors_Click" Style="{StaticResource ActionButton}" Background="#16A34A" Height="36" Margin="0,0,8,0"/>
-                    <Button x:Name="BtnResetView" Content="Återställ vy" Click="BtnResetView_Click" Style="{StaticResource ResetButton}" Height="36"/>
+                <!-- Action controls -->
+                <StackPanel Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- Top row: Compare button -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,10">
+                        <Button x:Name="BtnRunCompare" Content="Kör jämförelse" Click="BtnRunCompare_Click" Style="{StaticResource ActionButton}" Height="34" Padding="18,6"/>
+                    </StackPanel>
+
+                    <!-- Bottom row: Color mode selector + Apply -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="Färgvy:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#334155" FontSize="12"/>
+                        <ComboBox x:Name="CmbColorMode" Width="170" Height="30" VerticalContentAlignment="Center" Margin="0,0,6,0" FontSize="12">
+                            <ComboBoxItem Tag="All" IsSelected="True">🟩🟧🟥 Alla färger</ComboBoxItem>
+                            <ComboBoxItem Tag="AddedOnly">🟩 Endast Tillagda</ComboBoxItem>
+                            <ComboBoxItem Tag="ModifiedOnly">🟧 Endast Ändrade</ComboBoxItem>
+                            <ComboBoxItem Tag="RemovedOnly">🟥 Endast Borttagna</ComboBoxItem>
+                        </ComboBox>
+                        <CheckBox x:Name="ChkHalftone" Content="Tona ned övriga" IsChecked="True" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="11" ToolTip="Visar oförändrade och icke-aktiva element i gråskala"/>
+                        <Button x:Name="BtnApplyColors" Content="Färga vy" Click="BtnApplyColors_Click" Style="{StaticResource ActionButton}" Background="#16A34A" Height="30" Padding="12,4" Margin="0,0,6,0" FontSize="12"/>
+                        <Button x:Name="BtnResetView" Content="Återställ vy" Click="BtnResetView_Click" Style="{StaticResource ResetButton}" Height="30" Padding="10,4" FontSize="12"/>
+                    </StackPanel>
                 </StackPanel>
             </Grid>
         </Border>
@@ -134,7 +153,7 @@
                     <TextBlock Text="🟧" FontSize="22" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <StackPanel>
                         <TextBlock x:Name="TxtCountModified" Text="~0 Ändrade" FontSize="15" FontWeight="Bold" Foreground="#B45309"/>
-                        <TextBlock Text="Geometri eller parametrar skiljer" FontSize="11" Foreground="#92400E"/>
+                        <TextBlock x:Name="TxtModifiedSub" Text="Geometrisk ändring i modellen" FontSize="11" Foreground="#92400E"/>
                     </StackPanel>
                 </StackPanel>
             </Border>
@@ -232,14 +251,14 @@
                             <DataGridTextColumn Header="Familj &amp; Typ" Binding="{Binding DisplayName}" Width="*"/>
 
                             <!-- Ändringssammanfattning -->
-                            <DataGridTextColumn Header="Ändring" Binding="{Binding ChangeSummary}" Width="160"/>
+                            <DataGridTextColumn Header="Geometrisk ändring" Binding="{Binding ChangeSummary}" Width="200"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </DockPanel>
             </Border>
         </Grid>
 
-        <!-- 4. Parameter Diff Inspector (Bottom) -->
+        <!-- 4. Parameter/Geometry Diff Inspector (Bottom) -->
         <Border Grid.Row="3" Style="{StaticResource HeaderCard}" Margin="0,0,0,10">
             <DockPanel>
                 <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
@@ -249,12 +268,12 @@
                     </Grid.ColumnDefinitions>
 
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="Parameterjämförelse för valt objekt:" FontWeight="Bold" FontSize="13" Foreground="#0F172A" Margin="0,0,8,0"/>
+                        <TextBlock Text="Detaljer för valt objekt:" FontWeight="Bold" FontSize="13" Foreground="#0F172A" Margin="0,0,8,0"/>
                         <TextBlock x:Name="TxtSelectedItemName" Text="Inget objekt markerat" FontSize="13" Foreground="#64748B"/>
                     </StackPanel>
 
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
-                        <Button x:Name="BtnZoomToElement" Content="Zooma i Revit" Click="BtnZoomToElement_Click" Style="{StaticResource ActionButton}" Height="28" Padding="10,2" Margin="0,0,6,0"/>
+                        <Button x:Name="BtnZoomToElement" Content="🔍 Zooma i planvy" Click="BtnZoomToElement_Click" Style="{StaticResource ActionButton}" Height="28" Padding="12,2" Margin="0,0,6,0"/>
                         <Button x:Name="BtnSelectInRevit" Content="Markera i Revit" Click="BtnSelectInRevit_Click" Style="{StaticResource SecondaryButton}" Height="28" Padding="10,2"/>
                     </StackPanel>
                 </Grid>
@@ -263,7 +282,7 @@
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                           Background="#FAFAFA" RowHeight="26" FontSize="12">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="Parameter" Binding="{Binding ParameterName}" Width="200" FontWeight="SemiBold"/>
+                        <DataGridTextColumn Header="Egenskap / Ändring" Binding="{Binding ParameterName}" Width="220" FontWeight="SemiBold"/>
                         <DataGridTextColumn Header="Gammalt värde (Länk)" Binding="{Binding OldValue}" Width="*"/>
                         <DataGridTextColumn Header="Nytt värde (Aktiv)" Binding="{Binding NewValue}" Width="*"/>
                     </DataGrid.Columns>

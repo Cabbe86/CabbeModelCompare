@@ -42,7 +42,7 @@ namespace Cabbe.Revit.Compare.Services
             };
         }
 
-        public List<ComparisonItem> Compare(RevitLinkInstance linkInstance, List<BuiltInCategory> categories)
+        public List<ComparisonItem> Compare(RevitLinkInstance linkInstance, List<BuiltInCategory> categories, bool onlyGeometry = true)
         {
             var results = new List<ComparisonItem>();
             Document linkDoc = linkInstance.GetLinkDocument();
@@ -90,16 +90,17 @@ namespace Cabbe.Revit.Compare.Services
                 else
                 {
                     // Exists in both -> check if modified
-                    var diffs = CompareElements(hostElem, linkElem);
+                    var diffs = CompareElements(hostElem, linkElem, onlyGeometry);
                     if (diffs.Count > 0)
                     {
-                        var item = CreateItem(hostElem, linkElem, ComparisonStatus.Modified, $"{diffs.Count} ändring(ar)");
+                        string summary = onlyGeometry ? $"{diffs.Count} geometriändring(ar)" : $"{diffs.Count} ändring(ar)";
+                        var item = CreateItem(hostElem, linkElem, ComparisonStatus.Modified, summary);
                         item.ParameterDiffs = diffs;
                         results.Add(item);
                     }
                     else
                     {
-                        results.Add(CreateItem(hostElem, linkElem, ComparisonStatus.Unchanged, "Inga ändringar"));
+                        results.Add(CreateItem(hostElem, linkElem, ComparisonStatus.Unchanged, "Inga geometriska ändringar"));
                     }
                 }
             }
@@ -185,29 +186,127 @@ namespace Cabbe.Revit.Compare.Services
             return list.OrderBy(x => x.ParameterName).ToList();
         }
 
-        private List<ParameterDiff> CompareElements(Element hostElem, Element linkElem)
+        private List<ParameterDiff> CompareElements(Element hostElem, Element linkElem, bool onlyGeometry)
         {
             var diffs = new List<ParameterDiff>();
+            bool geometryDiff = false;
 
-            // 1. Compare BoundingBox
+            // 1. Compare BoundingBox (Placement and Dimensions)
             BoundingBoxXYZ? b1 = hostElem.get_BoundingBox(null);
             BoundingBoxXYZ? b2 = linkElem.get_BoundingBox(null);
+            const double tol = 0.016; // ~5 mm i Revit-interna fötter
+
             if (b1 != null && b2 != null)
             {
-                double distMin = b1.Min.DistanceTo(b2.Min);
-                double distMax = b1.Max.DistanceTo(b2.Max);
-                if (distMin > 0.02 || distMax > 0.02) // ~6 mm tolerans
+                // Dimensions in host coordinates
+                double hostDx = Math.Abs(b1.Max.X - b1.Min.X);
+                double hostDy = Math.Abs(b1.Max.Y - b1.Min.Y);
+                double hostDz = Math.Abs(b1.Max.Z - b1.Min.Z);
+
+                double linkDx = Math.Abs(b2.Max.X - b2.Min.X);
+                double linkDy = Math.Abs(b2.Max.Y - b2.Min.Y);
+                double linkDz = Math.Abs(b2.Max.Z - b2.Min.Z);
+
+                double diffDx = Math.Abs(hostDx - linkDx);
+                double diffDy = Math.Abs(hostDy - linkDy);
+                double diffDz = Math.Abs(hostDz - linkDz);
+
+                // Center points
+                XYZ c1 = (b1.Min + b1.Max) * 0.5;
+                XYZ c2 = (b2.Min + b2.Max) * 0.5;
+                double distCenter = c1.DistanceTo(c2);
+
+                if (distCenter > tol)
                 {
+                    geometryDiff = true;
+                    double distMm = distCenter * 304.8;
                     diffs.Add(new ParameterDiff
                     {
-                        ParameterName = "Geometri / Placering",
-                        OldValue = $"Min: {FormatPt(b2.Min)}",
-                        NewValue = $"Min: {FormatPt(b1.Min)}"
+                        ParameterName = "Placering (Flyttad)",
+                        OldValue = FormatPtMm(c2),
+                        NewValue = $"{FormatPtMm(c1)} (Flyttad {distMm:F0} mm)"
+                    });
+                }
+
+                if (diffDx > tol || diffDy > tol || diffDz > tol)
+                {
+                    geometryDiff = true;
+                    diffs.Add(new ParameterDiff
+                    {
+                        ParameterName = "Dimensioner (BxDxH)",
+                        OldValue = FormatDimMm(linkDx, linkDy, linkDz),
+                        NewValue = FormatDimMm(hostDx, hostDy, hostDz)
                     });
                 }
             }
 
-            // 2. Compare Type Name
+            // 2. Compare LocationPoint / LocationCurve
+            if (hostElem.Location is LocationPoint lp1 && linkElem.Location is LocationPoint lp2)
+            {
+                double pDist = lp1.Point.DistanceTo(lp2.Point);
+                if (pDist > tol && !geometryDiff)
+                {
+                    geometryDiff = true;
+                    diffs.Add(new ParameterDiff
+                    {
+                        ParameterName = "Infästningspunkt",
+                        OldValue = FormatPtMm(lp2.Point),
+                        NewValue = $"{FormatPtMm(lp1.Point)} (Flyttad {pDist * 304.8:F0} mm)"
+                    });
+                }
+
+                double rotDiff = Math.Abs(lp1.Rotation - lp2.Rotation);
+                if (rotDiff > 0.01) // > ~0.5 grader
+                {
+                    geometryDiff = true;
+                    diffs.Add(new ParameterDiff
+                    {
+                        ParameterName = "Rotation",
+                        OldValue = $"{lp2.Rotation * (180.0 / Math.PI):F1}°",
+                        NewValue = $"{lp1.Rotation * (180.0 / Math.PI):F1}°"
+                    });
+                }
+            }
+            else if (hostElem.Location is LocationCurve lc1 && linkElem.Location is LocationCurve lc2)
+            {
+                double len1 = lc1.Curve.Length;
+                double len2 = lc2.Curve.Length;
+                if (Math.Abs(len1 - len2) > tol)
+                {
+                    geometryDiff = true;
+                    diffs.Add(new ParameterDiff
+                    {
+                        ParameterName = "Längd",
+                        OldValue = $"{len2 * 304.8:F0} mm",
+                        NewValue = $"{len1 * 304.8:F0} mm"
+                    });
+                }
+            }
+
+            // 3. Compare Solids Volume if not yet confirmed
+            if (!geometryDiff)
+            {
+                double v1 = GetTotalSolidsVolume(hostElem);
+                double v2 = GetTotalSolidsVolume(linkElem);
+                if (v1 > 0.001 && v2 > 0.001 && Math.Abs(v1 - v2) > 0.05) // ~1.4 liter volymskillnad
+                {
+                    geometryDiff = true;
+                    diffs.Add(new ParameterDiff
+                    {
+                        ParameterName = "Volym",
+                        OldValue = $"{v2 * 0.0283168:F2} m³",
+                        NewValue = $"{v1 * 0.0283168:F2} m³"
+                    });
+                }
+            }
+
+            // Om användaren endast vill ha geometriska skillnader: returnera direkt
+            if (onlyGeometry)
+            {
+                return diffs;
+            }
+
+            // Vid full parameterkontroll: jämför även typnamn och nyckelparametrar
             string hostType = GetTypeName(hostElem);
             string linkType = GetTypeName(linkElem);
             if (hostType != linkType)
@@ -220,7 +319,6 @@ namespace Cabbe.Revit.Compare.Services
                 });
             }
 
-            // 3. Compare key parameters
             var hostParams = new Dictionary<string, Parameter>(StringComparer.OrdinalIgnoreCase);
             foreach (Parameter p in hostElem.Parameters)
             {
@@ -258,6 +356,43 @@ namespace Cabbe.Revit.Compare.Services
             return diffs;
         }
 
+        private double GetTotalSolidsVolume(Element elem)
+        {
+            double totalVol = 0;
+            try
+            {
+                Options opt = new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false };
+                GeometryElement geom = elem.get_Geometry(opt);
+                if (geom != null)
+                {
+                    totalVol = AccumulateSolidsVolume(geom);
+                }
+            }
+            catch { }
+            return totalVol;
+        }
+
+        private double AccumulateSolidsVolume(GeometryElement geomElem)
+        {
+            double vol = 0;
+            foreach (GeometryObject obj in geomElem)
+            {
+                if (obj is Solid solid && solid.Volume > 0.0001)
+                {
+                    vol += solid.Volume;
+                }
+                else if (obj is GeometryInstance gi)
+                {
+                    GeometryElement instGeom = gi.GetInstanceGeometry();
+                    if (instGeom != null)
+                    {
+                        vol += AccumulateSolidsVolume(instGeom);
+                    }
+                }
+            }
+            return vol;
+        }
+
         private string GetTypeName(Element elem)
         {
             try
@@ -273,9 +408,95 @@ namespace Cabbe.Revit.Compare.Services
             return string.Empty;
         }
 
-        private string FormatPt(XYZ p) => $"({p.X:F2}, {p.Y:F2}, {p.Z:F2})";
+        private string FormatPtMm(XYZ p) => $"({p.X * 304.8:F0}, {p.Y * 304.8:F0}, {p.Z * 304.8:F0}) mm";
+        private string FormatDimMm(double dx, double dy, double dz) => $"{dx * 304.8:F0} × {dy * 304.8:F0} × {dz * 304.8:F0} mm";
 
-        public void ApplyACCGraphicOverrides(View view, List<ComparisonItem> items, RevitLinkInstance linkInstance)
+        public ViewPlan? FindBestFloorPlanView(Element? elem, BoundingBoxXYZ? bbox)
+        {
+            var planViews = new FilteredElementCollector(_doc)
+                .OfClass(typeof(ViewPlan))
+                .Cast<ViewPlan>()
+                .Where(v => v.ViewType == ViewType.FloorPlan && !v.IsTemplate)
+                .ToList();
+
+            if (planViews.Count == 0) return null;
+
+            Level? targetLevel = null;
+            if (elem != null)
+            {
+                ElementId levelId = elem.LevelId;
+                if (levelId != null && levelId != ElementId.InvalidElementId)
+                {
+                    targetLevel = _doc.GetElement(levelId) as Level;
+                }
+
+                if (targetLevel == null)
+                {
+                    BuiltInParameter[] levelParams = new[]
+                    {
+                        BuiltInParameter.SCHEDULE_LEVEL_PARAM,
+                        BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM,
+                        BuiltInParameter.WALL_BASE_CONSTRAINT,
+                        BuiltInParameter.FAMILY_LEVEL_PARAM,
+                        BuiltInParameter.LEVEL_PARAM,
+                        BuiltInParameter.ROOF_BASE_LEVEL_PARAM
+                    };
+
+                    foreach (var bip in levelParams)
+                    {
+                        Parameter? p = elem.get_Parameter(bip);
+                        if (p != null && p.StorageType == StorageType.ElementId)
+                        {
+                            ElementId id = p.AsElementId();
+                            if (id != null && id != ElementId.InvalidElementId && _doc.GetElement(id) is Level lvl)
+                            {
+                                targetLevel = lvl;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (targetLevel == null && bbox != null)
+            {
+                double targetZ = (bbox.Min.Z + bbox.Max.Z) * 0.5;
+                var allLevels = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(Level))
+                    .Cast<Level>()
+                    .OrderBy(l => l.Elevation)
+                    .ToList();
+
+                Level? bestLvl = null;
+                double minDiff = double.MaxValue;
+                foreach (var lvl in allLevels)
+                {
+                    double diff = Math.Abs(lvl.Elevation - targetZ);
+                    if (diff < minDiff)
+                    {
+                        minDiff = diff;
+                        bestLvl = lvl;
+                    }
+                }
+                targetLevel = bestLvl;
+            }
+
+            if (targetLevel != null)
+            {
+                var matchPlan = planViews.FirstOrDefault(v => v.GenLevel != null && v.GenLevel.Id == targetLevel.Id);
+                if (matchPlan != null) return matchPlan;
+
+                var bestPlan = planViews
+                    .Where(v => v.GenLevel != null)
+                    .OrderBy(v => Math.Abs(v.GenLevel.Elevation - targetLevel.Elevation))
+                    .FirstOrDefault();
+                if (bestPlan != null) return bestPlan;
+            }
+
+            return planViews.FirstOrDefault();
+        }
+
+        public void ApplyACCGraphicOverrides(View view, List<ComparisonItem> items, RevitLinkInstance linkInstance, ViewColorMode colorMode, bool halftoneUnchanged)
         {
             if (view == null || items == null) return;
 
@@ -287,30 +508,50 @@ namespace Cabbe.Revit.Compare.Services
 
             var ogsAdded = CreateOgs(green, solidFillId, 0);
             var ogsModified = CreateOgs(orange, solidFillId, 0);
-            var ogsUnchanged = new OverrideGraphicSettings();
-            ogsUnchanged.SetHalftone(true);
+            var ogsHalftone = new OverrideGraphicSettings();
+            ogsHalftone.SetHalftone(true);
+            var ogsDefault = new OverrideGraphicSettings();
 
             // 1. Override Host Elements in Active View
             foreach (var item in items)
             {
                 if (item.HostId == null || item.HostId == ElementId.InvalidElementId) continue;
 
-                if (item.Status == ComparisonStatus.Added)
+                try
                 {
-                    view.SetElementOverrides(item.HostId, ogsAdded);
+                    switch (item.Status)
+                    {
+                        case ComparisonStatus.Added:
+                            if (colorMode == ViewColorMode.All || colorMode == ViewColorMode.AddedOnly)
+                                view.SetElementOverrides(item.HostId, ogsAdded);
+                            else
+                                view.SetElementOverrides(item.HostId, halftoneUnchanged ? ogsHalftone : ogsDefault);
+                            break;
+
+                        case ComparisonStatus.Modified:
+                            if (colorMode == ViewColorMode.All || colorMode == ViewColorMode.ModifiedOnly)
+                                view.SetElementOverrides(item.HostId, ogsModified);
+                            else
+                                view.SetElementOverrides(item.HostId, halftoneUnchanged ? ogsHalftone : ogsDefault);
+                            break;
+
+                        case ComparisonStatus.Unchanged:
+                            view.SetElementOverrides(item.HostId, halftoneUnchanged ? ogsHalftone : ogsDefault);
+                            break;
+                    }
                 }
-                else if (item.Status == ComparisonStatus.Modified)
-                {
-                    view.SetElementOverrides(item.HostId, ogsModified);
-                }
-                else if (item.Status == ComparisonStatus.Unchanged)
-                {
-                    view.SetElementOverrides(item.HostId, ogsUnchanged);
-                }
+                catch { }
             }
 
-            // 2. Generate Ghost DirectShapes for Removed Elements (Red #E74C3C)
-            CreateGhostDirectShapes(view, items.Where(i => i.Status == ComparisonStatus.Removed), linkInstance, solidFillId);
+            // 2. Removed Elements (Ghost DirectShapes)
+            if (colorMode == ViewColorMode.All || colorMode == ViewColorMode.RemovedOnly)
+            {
+                CreateGhostDirectShapes(view, items.Where(i => i.Status == ComparisonStatus.Removed), linkInstance, solidFillId);
+            }
+            else
+            {
+                ClearGhostDirectShapes();
+            }
         }
 
         private OverrideGraphicSettings CreateOgs(Color color, ElementId fillId, int transparency)
@@ -392,6 +633,45 @@ namespace Cabbe.Revit.Compare.Services
             }
         }
 
+        public void ClearGhostDirectShapes()
+        {
+            var directShapes = new FilteredElementCollector(_doc)
+                .OfClass(typeof(DirectShape))
+                .Cast<DirectShape>()
+                .Where(ds => ds.Name.StartsWith("CabbeCompare_Deleted_"))
+                .Select(ds => ds.Id)
+                .ToList();
+
+            if (directShapes.Count > 0)
+            {
+                _doc.Delete(directShapes);
+            }
+        }
+
+        public void ResetViewAndClearVisuals(View view)
+        {
+            if (view == null) return;
+
+            // 1. Delete all comparison DirectShapes
+            ClearGhostDirectShapes();
+
+            // 2. Clear element overrides in current view
+            var elementsInView = new FilteredElementCollector(_doc, view.Id)
+                .WhereElementIsNotElementType()
+                .Select(e => e.Id)
+                .ToList();
+
+            var defaultOgs = new OverrideGraphicSettings();
+            foreach (var id in elementsInView)
+            {
+                try
+                {
+                    view.SetElementOverrides(id, defaultOgs);
+                }
+                catch { }
+            }
+        }
+
         private void ExtractSolids(GeometryElement geomElem, Transform transform, List<GeometryObject> result)
         {
             foreach (GeometryObject obj in geomElem)
@@ -409,40 +689,6 @@ namespace Cabbe.Revit.Compare.Services
                         ExtractSolids(instGeom, transform, result);
                     }
                 }
-            }
-        }
-
-        public void ResetViewAndClearVisuals(View view)
-        {
-            if (view == null) return;
-
-            // 1. Delete all comparison DirectShapes
-            var directShapes = new FilteredElementCollector(_doc)
-                .OfClass(typeof(DirectShape))
-                .Cast<DirectShape>()
-                .Where(ds => ds.Name.StartsWith("CabbeCompare_Deleted_"))
-                .Select(ds => ds.Id)
-                .ToList();
-
-            if (directShapes.Count > 0)
-            {
-                _doc.Delete(directShapes);
-            }
-
-            // 2. Clear element overrides in current view
-            var elementsInView = new FilteredElementCollector(_doc, view.Id)
-                .WhereElementIsNotElementType()
-                .Select(e => e.Id)
-                .ToList();
-
-            var defaultOgs = new OverrideGraphicSettings();
-            foreach (var id in elementsInView)
-            {
-                try
-                {
-                    view.SetElementOverrides(id, defaultOgs);
-                }
-                catch { }
             }
         }
 
