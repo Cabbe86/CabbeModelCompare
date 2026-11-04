@@ -19,6 +19,7 @@ namespace Cabbe.Revit.Compare
     public class CompareExternalEventHandler : IExternalEventHandler
     {
         public CompareAction PendingAction { get; set; } = CompareAction.None;
+        public ComparisonItem? TargetItem { get; set; }
         public ElementId? TargetElementId { get; set; }
         public RevitLinkInstance? SelectedLink { get; set; }
         public List<BuiltInCategory>? SelectedCategories { get; set; }
@@ -77,7 +78,49 @@ namespace Cabbe.Revit.Compare
                         break;
 
                     case CompareAction.SelectAndZoom:
-                        if (TargetElementId != null && TargetElementId != ElementId.InvalidElementId)
+                        if (TargetItem != null)
+                        {
+                            if (TargetItem.HostId != null && TargetItem.HostId != ElementId.InvalidElementId)
+                            {
+                                uidoc.Selection.SetElementIds(new List<ElementId> { TargetItem.HostId });
+                                uidoc.ShowElements(TargetItem.HostId);
+                            }
+                            else if (TargetItem.Status == ComparisonStatus.Removed && SelectedLink != null)
+                            {
+                                DirectShape? ghostDs = null;
+                                using (Transaction t = new Transaction(doc, "Skapa/visa borttaget spökobjekt"))
+                                {
+                                    t.Start();
+                                    ghostDs = engine.GetOrCreateGhostDirectShape(uidoc.ActiveView, TargetItem, SelectedLink);
+                                    t.Commit();
+                                }
+
+                                if (ghostDs != null)
+                                {
+                                    uidoc.RefreshActiveView();
+                                    uidoc.Selection.SetElementIds(new List<ElementId> { ghostDs.Id });
+                                    uidoc.ShowElements(ghostDs.Id);
+                                }
+                                else if (TargetItem.LinkId != null)
+                                {
+                                    Document linkDoc = SelectedLink.GetLinkDocument();
+                                    if (linkDoc != null)
+                                    {
+                                        Element? linkElem = linkDoc.GetElement(TargetItem.LinkId);
+                                        BoundingBoxXYZ? bbox = linkElem?.get_BoundingBox(null);
+                                        if (bbox != null)
+                                        {
+                                            Transform tr = SelectedLink.GetTotalTransform();
+                                            XYZ min = tr.OfPoint(bbox.Min);
+                                            XYZ max = tr.OfPoint(bbox.Max);
+                                            UIView? uiview = uidoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == uidoc.ActiveView.Id);
+                                            uiview?.ZoomAndCenterRectangle(min, max);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else if (TargetElementId != null && TargetElementId != ElementId.InvalidElementId)
                         {
                             uidoc.Selection.SetElementIds(new List<ElementId> { TargetElementId });
                             uidoc.ShowElements(TargetElementId);
