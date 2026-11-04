@@ -9,7 +9,6 @@
         FontFamily="Segoe UI">
 
     <Window.Resources>
-        <!-- Stilar för knappar och kort -->
         <Style x:Key="HeaderCard" TargetType="Border">
             <Setter Property="Background" Value="#FFFFFF"/>
             <Setter Property="CornerRadius" Value="8"/>
@@ -203,8 +202,6 @@
 
                         <TextBox x:Name="TxtSearch" Height="30" VerticalContentAlignment="Center" Padding="8,2"
                                  ToolTip="Sök på typ, kategori, id..." TextChanged="TxtSearch_TextChanged"/>
-                        <TextBlock Text="🔍 Sök på typ, kategori..." Foreground="#94A3B8" Margin="8,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
-                                   Visibility="{Binding Text.IsEmpty, ElementName=TxtSearch, Converter={x:Static BooleanToVisibilityConverter.False}}"/>
 
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0,0,0">
                             <TextBlock x:Name="TxtCurrentFilter" Text="Visar: Alla" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#475569" Margin="0,0,8,0"/>
