@@ -501,7 +501,6 @@ namespace Cabbe.Revit.Compare.Services
             if (view == null || items == null) return;
 
             ElementId? solidFillId = GetSolidFillPatternId();
-            if (solidFillId == null) return;
 
             Color green = new Color(39, 174, 96);    // #27AE60 Tillagd
             Color orange = new Color(230, 126, 34);  // #E67E22 Ändrad
@@ -546,6 +545,17 @@ namespace Cabbe.Revit.Compare.Services
             // 2. Removed Elements (Ghost DirectShapes)
             if (colorMode == ViewColorMode.All || colorMode == ViewColorMode.RemovedOnly)
             {
+                // Säkerställ att Generic Models syns i vyn
+                try
+                {
+                    var catId = new ElementId(BuiltInCategory.OST_GenericModel);
+                    if (view.GetCategoryHidden(catId))
+                    {
+                        view.SetCategoryHidden(catId, false);
+                    }
+                }
+                catch { }
+
                 CreateGhostDirectShapes(view, items.Where(i => i.Status == ComparisonStatus.Removed), linkInstance, solidFillId);
             }
             else
@@ -554,13 +564,20 @@ namespace Cabbe.Revit.Compare.Services
             }
         }
 
-        private OverrideGraphicSettings CreateOgs(Color color, ElementId fillId, int transparency)
+        private OverrideGraphicSettings CreateOgs(Color color, ElementId? fillId, int transparency)
         {
             var ogs = new OverrideGraphicSettings();
-            ogs.SetSurfaceForegroundPatternId(fillId);
-            ogs.SetSurfaceForegroundPatternColor(color);
-            ogs.SetCutForegroundPatternId(fillId);
-            ogs.SetCutForegroundPatternColor(color);
+            if (fillId != null && fillId != ElementId.InvalidElementId)
+            {
+                try
+                {
+                    ogs.SetSurfaceForegroundPatternId(fillId);
+                    ogs.SetSurfaceForegroundPatternColor(color);
+                    ogs.SetCutForegroundPatternId(fillId);
+                    ogs.SetCutForegroundPatternColor(color);
+                }
+                catch { }
+            }
             ogs.SetProjectionLineColor(color);
             ogs.SetCutLineColor(color);
             if (transparency > 0)
@@ -580,7 +597,15 @@ namespace Cabbe.Revit.Compare.Services
                 .Cast<DirectShape>()
                 .FirstOrDefault(ds => ds.Name == dsName);
 
-            if (existing != null) return existing;
+            fillId ??= GetSolidFillPatternId();
+            Color redColor = new Color(231, 76, 60); // #E74C3C
+            var ogsRemoved = CreateOgs(redColor, fillId, 40); // 40% transparency for ghost effect
+
+            if (existing != null)
+            {
+                try { view.SetElementOverrides(existing.Id, ogsRemoved); } catch { }
+                return existing;
+            }
 
             Document linkDoc = linkInstance.GetLinkDocument();
             if (linkDoc == null) return null;
@@ -588,44 +613,185 @@ namespace Cabbe.Revit.Compare.Services
             Element? linkElem = linkDoc.GetElement(item.LinkId);
             if (linkElem == null) return null;
 
-            fillId ??= GetSolidFillPatternId();
-            if (fillId == null) return null;
-
             Transform totalTransform = linkInstance.GetTotalTransform();
-            Color red = new Color(231, 76, 60); // #E74C3C
-            var ogsRemoved = CreateOgs(red, fillId, 40); // 40% transparency for ghost effect
 
-            Options opt = new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false };
+            // Förbered bounding box för transformation
+            BoundingBoxXYZ? rawBbox = null;
+            try { rawBbox = linkElem.get_BoundingBox(null); } catch { }
 
+            XYZ? boxMin = null;
+            XYZ? boxMax = null;
+            if (rawBbox != null)
+            {
+                XYZ pMin = totalTransform.OfPoint(rawBbox.Min);
+                XYZ pMax = totalTransform.OfPoint(rawBbox.Max);
+                boxMin = new XYZ(Math.Min(pMin.X, pMax.X), Math.Min(pMin.Y, pMax.Y), Math.Min(pMin.Z, pMax.Z));
+                boxMax = new XYZ(Math.Max(pMin.X, pMax.X), Math.Max(pMin.Y, pMax.Y), Math.Max(pMin.Z, pMax.Z));
+            }
+
+            // 1. Försök extrahera detaljerade solids från länkobjektet
+            List<GeometryObject> solids = new List<GeometryObject>();
             try
             {
+                Options opt = new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false };
                 GeometryElement geom = linkElem.get_Geometry(opt);
-                if (geom == null) return null;
-
-                List<GeometryObject> solids = new List<GeometryObject>();
-                ExtractSolids(geom, totalTransform, solids);
-
-                if (solids.Count > 0)
+                if (geom != null)
                 {
-                    DirectShape ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
-                    ds.ApplicationId = "CabbeModelCompare";
-                    ds.ApplicationDataId = item.UniqueId;
-                    ds.Name = dsName;
-                    ds.SetShape(solids);
-
-                    view.SetElementOverrides(ds.Id, ogsRemoved);
-                    return ds;
+                    ExtractSolids(geom, totalTransform, solids);
                 }
+            }
+            catch { }
+
+            // 2. Fallback: Om inga solids hittades, skapa en 3D-box från elementets BoundingBox
+            if (solids.Count == 0 && boxMin != null && boxMax != null)
+            {
+                Solid? fallbackBox = CreateBoxSolid(boxMin, boxMax);
+                if (fallbackBox != null)
+                {
+                    solids.Add(fallbackBox);
+                }
+            }
+
+            if (solids.Count == 0) return null;
+
+            // 3. Skapa DirectShape som GenericModel i värddokumentet
+            try
+            {
+                DirectShape ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                ds.ApplicationId = "CabbeModelCompare";
+                ds.ApplicationDataId = item.UniqueId;
+                ds.Name = dsName;
+
+                bool shapeSet = false;
+                try
+                {
+                    ds.SetShape(solids);
+                    shapeSet = true;
+                }
+                catch
+                {
+                    // Om detaljerad solid misslyckas i Revit (t.ex. icke-manifolderad geometri), använd 3D-box
+                    if (boxMin != null && boxMax != null)
+                    {
+                        Solid? fallbackBox = CreateBoxSolid(boxMin, boxMax);
+                        if (fallbackBox != null)
+                        {
+                            try
+                            {
+                                ds.SetShape(new List<GeometryObject> { fallbackBox });
+                                shapeSet = true;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+
+                if (!shapeSet)
+                {
+                    // Kunde inte sätta geometrin
+                    try { _doc.Delete(ds.Id); } catch { }
+                    return null;
+                }
+
+                // Sätt rött spökmaterial på elementet så det syns i 3D och planvy
+                try
+                {
+                    ElementId redMatId = GetOrCreateRedGhostMaterial();
+                    if (redMatId != ElementId.InvalidElementId)
+                    {
+                        var matParam = ds.get_Parameter(BuiltInParameter.MATERIAL_ID_PARAM);
+                        matParam?.Set(redMatId);
+                    }
+                }
+                catch { }
+
+                // Se till att kategorin Generic Model är synlig i aktuell vy
+                try
+                {
+                    var catId = new ElementId(BuiltInCategory.OST_GenericModel);
+                    if (view.GetCategoryHidden(catId))
+                    {
+                        view.SetCategoryHidden(catId, false);
+                    }
+                }
+                catch { }
+
+                // Sätt vy-overrides (röd färg och transparens)
+                try
+                {
+                    view.SetElementOverrides(ds.Id, ogsRemoved);
+                }
+                catch { }
+
+                return ds;
             }
             catch
             {
-                // Ignorera enskilda geometrier som inte kan representeras som DirectShape
+                return null;
             }
-
-            return null;
         }
 
-        private void CreateGhostDirectShapes(View view, IEnumerable<ComparisonItem> removedItems, RevitLinkInstance linkInstance, ElementId fillId)
+        private Solid? CreateBoxSolid(XYZ min, XYZ max)
+        {
+            try
+            {
+                double dx = max.X - min.X;
+                double dy = max.Y - min.Y;
+                double dz = max.Z - min.Z;
+
+                // Minsta dimensioner (minst ~60 mm) så Revit inte nekar för små profiler
+                double minDim = 0.2;
+                if (dx < minDim) { double mid = (min.X + max.X) / 2.0; min = new XYZ(mid - minDim / 2.0, min.Y, min.Z); max = new XYZ(mid + minDim / 2.0, max.Y, max.Z); }
+                if (dy < minDim) { double mid = (min.Y + max.Y) / 2.0; min = new XYZ(min.X, mid - minDim / 2.0, min.Z); max = new XYZ(max.X, mid + minDim / 2.0, max.Z); }
+                if (dz < minDim) { double mid = (min.Z + max.Z) / 2.0; min = new XYZ(min.X, min.Y, mid - minDim / 2.0); max = new XYZ(max.X, max.Y, mid + minDim / 2.0); }
+
+                XYZ p0 = new XYZ(min.X, min.Y, min.Z);
+                XYZ p1 = new XYZ(max.X, min.Y, min.Z);
+                XYZ p2 = new XYZ(max.X, max.Y, min.Z);
+                XYZ p3 = new XYZ(min.X, max.Y, min.Z);
+
+                CurveLoop loop = new CurveLoop();
+                loop.Append(Line.CreateBound(p0, p1));
+                loop.Append(Line.CreateBound(p1, p2));
+                loop.Append(Line.CreateBound(p2, p3));
+                loop.Append(Line.CreateBound(p3, p0));
+
+                double height = max.Z - min.Z;
+                return GeometryCreationUtilities.CreateExtrusionGeometry(new List<CurveLoop> { loop }, XYZ.BasisZ, height);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private ElementId GetOrCreateRedGhostMaterial()
+        {
+            string matName = "CabbeCompare_RedGhost";
+            try
+            {
+                var existing = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(Material))
+                    .Cast<Material>()
+                    .FirstOrDefault(m => m.Name == matName);
+
+                if (existing != null) return existing.Id;
+
+                ElementId newId = Material.Create(_doc, matName);
+                if (newId != ElementId.InvalidElementId)
+                {
+                    Material mat = (Material)_doc.GetElement(newId);
+                    mat.Color = new Color(231, 76, 60); // #E74C3C Röd
+                    mat.Transparency = 40; // 40% transparent
+                    return newId;
+                }
+            }
+            catch { }
+
+            return ElementId.InvalidElementId;
+        }
+
+        private void CreateGhostDirectShapes(View view, IEnumerable<ComparisonItem> removedItems, RevitLinkInstance linkInstance, ElementId? fillId)
         {
             foreach (var item in removedItems)
             {
@@ -635,17 +801,21 @@ namespace Cabbe.Revit.Compare.Services
 
         public void ClearGhostDirectShapes()
         {
-            var directShapes = new FilteredElementCollector(_doc)
-                .OfClass(typeof(DirectShape))
-                .Cast<DirectShape>()
-                .Where(ds => ds.Name.StartsWith("CabbeCompare_Deleted_"))
-                .Select(ds => ds.Id)
-                .ToList();
-
-            if (directShapes.Count > 0)
+            try
             {
-                _doc.Delete(directShapes);
+                var directShapes = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(DirectShape))
+                    .Cast<DirectShape>()
+                    .Where(ds => ds.Name.StartsWith("CabbeCompare_Deleted_"))
+                    .Select(ds => ds.Id)
+                    .ToList();
+
+                if (directShapes.Count > 0)
+                {
+                    _doc.Delete(directShapes);
+                }
             }
+            catch { }
         }
 
         public void ResetViewAndClearVisuals(View view)
@@ -656,48 +826,101 @@ namespace Cabbe.Revit.Compare.Services
             ClearGhostDirectShapes();
 
             // 2. Clear element overrides in current view
-            var elementsInView = new FilteredElementCollector(_doc, view.Id)
-                .WhereElementIsNotElementType()
-                .Select(e => e.Id)
-                .ToList();
-
-            var defaultOgs = new OverrideGraphicSettings();
-            foreach (var id in elementsInView)
+            try
             {
-                try
+                var elementsInView = new FilteredElementCollector(_doc, view.Id)
+                    .WhereElementIsNotElementType()
+                    .Select(e => e.Id)
+                    .ToList();
+
+                var defaultOgs = new OverrideGraphicSettings();
+                foreach (var id in elementsInView)
                 {
-                    view.SetElementOverrides(id, defaultOgs);
+                    try
+                    {
+                        view.SetElementOverrides(id, defaultOgs);
+                    }
+                    catch { }
                 }
-                catch { }
             }
+            catch { }
         }
 
         private void ExtractSolids(GeometryElement geomElem, Transform transform, List<GeometryObject> result)
         {
             foreach (GeometryObject obj in geomElem)
             {
-                if (obj is Solid solid && solid.Volume > 0.0001)
+                try
                 {
-                    Solid transformedSolid = SolidUtils.CreateTransformed(solid, transform);
-                    result.Add(transformedSolid);
-                }
-                else if (obj is GeometryInstance gi)
-                {
-                    GeometryElement instGeom = gi.GetInstanceGeometry();
-                    if (instGeom != null)
+                    if (obj is Solid solid && solid.Volume > 0.0001 && solid.Faces.Size > 0)
                     {
-                        ExtractSolids(instGeom, transform, result);
+                        if (transform.IsIdentity)
+                        {
+                            result.Add(solid);
+                        }
+                        else
+                        {
+                            try
+                            {
+                                Solid transformedSolid = SolidUtils.CreateTransformed(solid, transform);
+                                result.Add(transformedSolid);
+                            }
+                            catch
+                            {
+                                result.Add(solid);
+                            }
+                        }
+                    }
+                    else if (obj is GeometryInstance gi)
+                    {
+                        GeometryElement instGeom = gi.GetInstanceGeometry();
+                        if (instGeom != null)
+                        {
+                            ExtractSolids(instGeom, transform, result);
+                        }
                     }
                 }
+                catch { }
             }
         }
 
         private ElementId? GetSolidFillPatternId()
         {
-            return new FilteredElementCollector(_doc)
-                .OfClass(typeof(FillPatternElement))
-                .Cast<FillPatternElement>()
-                .FirstOrDefault(fp => fp.GetFillPattern().IsSolidFill)?.Id;
+            try
+            {
+                var patterns = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(FillPatternElement))
+                    .Cast<FillPatternElement>();
+
+                foreach (var fp in patterns)
+                {
+                    try
+                    {
+                        var pat = fp.GetFillPattern();
+                        if (pat != null && pat.IsSolidFill)
+                        {
+                            return fp.Id;
+                        }
+                    }
+                    catch { }
+                }
+
+                // Sök på namn om IsSolidFill inte matchade
+                foreach (var fp in patterns)
+                {
+                    try
+                    {
+                        if (fp.Name.IndexOf("Solid", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            fp.Name.IndexOf("Enfärgad", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            return fp.Id;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return null;
         }
     }
 }
