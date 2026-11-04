@@ -53,18 +53,26 @@ namespace Cabbe.Revit.Compare.Services
             ElementMulticategoryFilter multiCatFilter = new ElementMulticategoryFilter(categories);
 
             // Host elements
-            var hostElements = new FilteredElementCollector(_doc)
+            var hostElements = new Dictionary<string, Element>();
+            var hostCollector = new FilteredElementCollector(_doc)
                 .WherePasses(multiCatFilter)
                 .WhereElementIsNotElementType()
-                .Where(e => !e.ViewSpecific && !e.Name.StartsWith("CabbeCompare_"))
-                .ToDictionary(e => e.UniqueId, e => e);
+                .Where(e => !e.ViewSpecific && !e.Name.StartsWith("CabbeCompare_"));
+            foreach (var e in hostCollector)
+            {
+                hostElements[e.UniqueId] = e;
+            }
 
             // Link elements
-            var linkElements = new FilteredElementCollector(linkDoc)
+            var linkElements = new Dictionary<string, Element>();
+            var linkCollector = new FilteredElementCollector(linkDoc)
                 .WherePasses(multiCatFilter)
                 .WhereElementIsNotElementType()
-                .Where(e => !e.ViewSpecific)
-                .ToDictionary(e => e.UniqueId, e => e);
+                .Where(e => !e.ViewSpecific);
+            foreach (var e in linkCollector)
+            {
+                linkElements[e.UniqueId] = e;
+            }
 
             // 1. Check Host elements (Added or Modified or Unchanged)
             foreach (var kvp in hostElements)
@@ -187,9 +195,18 @@ namespace Cabbe.Revit.Compare.Services
             }
 
             // 3. Compare key parameters
-            var hostParams = hostElem.Parameters.Cast<Parameter>().ToDictionary(p => p.Definition.Name, p => p);
+            var hostParams = new Dictionary<string, Parameter>(StringComparer.OrdinalIgnoreCase);
+            foreach (Parameter p in hostElem.Parameters)
+            {
+                if (p?.Definition != null && !string.IsNullOrEmpty(p.Definition.Name))
+                {
+                    hostParams[p.Definition.Name] = p;
+                }
+            }
+
             foreach (Parameter lp in linkElem.Parameters)
             {
+                if (lp?.Definition == null || string.IsNullOrEmpty(lp.Definition.Name)) continue;
                 string pName = lp.Definition.Name;
                 if (pName.StartsWith("Internal") || pName.Contains("GUID")) continue;
 
