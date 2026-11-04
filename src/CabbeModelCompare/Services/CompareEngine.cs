@@ -83,7 +83,9 @@ namespace Cabbe.Revit.Compare.Services
                 if (!linkElements.TryGetValue(uId, out Element? linkElem))
                 {
                     // Added
-                    results.Add(CreateItem(hostElem, null, ComparisonStatus.Added, "Nytt objekt i aktiv modell"));
+                    var item = CreateItem(hostElem, null, ComparisonStatus.Added, "Nytt objekt i aktiv modell");
+                    item.ParameterDiffs = GetElementParametersForDisplay(hostElem, isOld: false);
+                    results.Add(item);
                 }
                 else
                 {
@@ -110,7 +112,9 @@ namespace Cabbe.Revit.Compare.Services
 
                 if (!hostElements.ContainsKey(uId))
                 {
-                    results.Add(CreateItem(null, linkElem, ComparisonStatus.Removed, "Borttaget ur aktiv modell"));
+                    var item = CreateItem(null, linkElem, ComparisonStatus.Removed, "Borttaget ur aktiv modell");
+                    item.ParameterDiffs = GetElementParametersForDisplay(linkElem, isOld: true);
+                    results.Add(item);
                 }
             }
 
@@ -157,6 +161,28 @@ namespace Cabbe.Revit.Compare.Services
                 TypeName = typeName,
                 ChangeSummary = summary
             };
+        }
+
+        private List<ParameterDiff> GetElementParametersForDisplay(Element elem, bool isOld)
+        {
+            var list = new List<ParameterDiff>();
+            foreach (Parameter p in elem.Parameters)
+            {
+                if (p?.Definition == null || string.IsNullOrEmpty(p.Definition.Name)) continue;
+                string pName = p.Definition.Name;
+                if (pName.StartsWith("Internal") || pName.Contains("GUID")) continue;
+
+                string val = p.AsValueString() ?? p.AsString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(val)) continue;
+
+                list.Add(new ParameterDiff
+                {
+                    ParameterName = pName,
+                    OldValue = isOld ? val : "(Ny i aktiv modell)",
+                    NewValue = isOld ? "(Borttagen ur aktiv modell)" : val
+                });
+            }
+            return list.OrderBy(x => x.ParameterName).ToList();
         }
 
         private List<ParameterDiff> CompareElements(Element hostElem, Element linkElem)
@@ -303,10 +329,26 @@ namespace Cabbe.Revit.Compare.Services
             return ogs;
         }
 
-        private void CreateGhostDirectShapes(View view, IEnumerable<ComparisonItem> removedItems, RevitLinkInstance linkInstance, ElementId fillId)
+        public DirectShape? GetOrCreateGhostDirectShape(View view, ComparisonItem item, RevitLinkInstance linkInstance, ElementId? fillId = null)
         {
+            if (item.LinkId == null || string.IsNullOrEmpty(item.UniqueId)) return null;
+
+            string dsName = "CabbeCompare_Deleted_" + item.UniqueId;
+            var existing = new FilteredElementCollector(_doc)
+                .OfClass(typeof(DirectShape))
+                .Cast<DirectShape>()
+                .FirstOrDefault(ds => ds.Name == dsName);
+
+            if (existing != null) return existing;
+
             Document linkDoc = linkInstance.GetLinkDocument();
-            if (linkDoc == null) return;
+            if (linkDoc == null) return null;
+
+            Element? linkElem = linkDoc.GetElement(item.LinkId);
+            if (linkElem == null) return null;
+
+            fillId ??= GetSolidFillPatternId();
+            if (fillId == null) return null;
 
             Transform totalTransform = linkInstance.GetTotalTransform();
             Color red = new Color(231, 76, 60); // #E74C3C
@@ -314,35 +356,39 @@ namespace Cabbe.Revit.Compare.Services
 
             Options opt = new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false };
 
+            try
+            {
+                GeometryElement geom = linkElem.get_Geometry(opt);
+                if (geom == null) return null;
+
+                List<GeometryObject> solids = new List<GeometryObject>();
+                ExtractSolids(geom, totalTransform, solids);
+
+                if (solids.Count > 0)
+                {
+                    DirectShape ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                    ds.ApplicationId = "CabbeModelCompare";
+                    ds.ApplicationDataId = item.UniqueId;
+                    ds.Name = dsName;
+                    ds.SetShape(solids);
+
+                    view.SetElementOverrides(ds.Id, ogsRemoved);
+                    return ds;
+                }
+            }
+            catch
+            {
+                // Ignorera enskilda geometrier som inte kan representeras som DirectShape
+            }
+
+            return null;
+        }
+
+        private void CreateGhostDirectShapes(View view, IEnumerable<ComparisonItem> removedItems, RevitLinkInstance linkInstance, ElementId fillId)
+        {
             foreach (var item in removedItems)
             {
-                if (item.LinkId == null) continue;
-                Element? linkElem = linkDoc.GetElement(item.LinkId);
-                if (linkElem == null) continue;
-
-                try
-                {
-                    GeometryElement geom = linkElem.get_Geometry(opt);
-                    if (geom == null) continue;
-
-                    List<GeometryObject> solids = new List<GeometryObject>();
-                    ExtractSolids(geom, totalTransform, solids);
-
-                    if (solids.Count > 0)
-                    {
-                        DirectShape ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
-                        ds.ApplicationId = "CabbeModelCompare";
-                        ds.ApplicationDataId = item.UniqueId;
-                        ds.Name = "CabbeCompare_Deleted_" + item.UniqueId;
-                        ds.SetShape(solids);
-
-                        view.SetElementOverrides(ds.Id, ogsRemoved);
-                    }
-                }
-                catch
-                {
-                    // Ignorera enskilda geometrier som inte kan representeras som DirectShape
-                }
+                GetOrCreateGhostDirectShape(view, item, linkInstance, fillId);
             }
         }
 
