@@ -587,19 +587,29 @@ namespace Cabbe.Revit.Compare.Services
             return ogs;
         }
 
-        public DirectShape? GetOrCreateGhostDirectShape(View view, ComparisonItem item, RevitLinkInstance linkInstance, ElementId? fillId = null)
+        public DirectShape? GetOrCreateGhostDirectShape(View view, ComparisonItem item, RevitLinkInstance linkInstance, ElementId? fillId = null, Dictionary<string, DirectShape>? existingMap = null)
         {
             if (item.LinkId == null || string.IsNullOrEmpty(item.UniqueId)) return null;
 
             string dsName = "CabbeCompare_Deleted_" + item.UniqueId;
-            var existing = new FilteredElementCollector(_doc)
-                .OfClass(typeof(DirectShape))
-                .Cast<DirectShape>()
-                .FirstOrDefault(ds => ds.Name == dsName);
+            DirectShape? existing = null;
+            if (existingMap != null && existingMap.TryGetValue(dsName, out DirectShape? foundDs))
+            {
+                existing = foundDs;
+            }
+            else
+            {
+                existing = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(DirectShape))
+                    .Cast<DirectShape>()
+                    .FirstOrDefault(ds => ds.Name == dsName);
+            }
 
             fillId ??= GetSolidFillPatternId();
             Color redColor = new Color(231, 76, 60); // #E74C3C
-            var ogsRemoved = CreateOgs(redColor, fillId, 40); // 40% transparency for ghost effect
+            var ogsRemoved = CreateOgs(redColor, fillId, 30); // 30% transparency for ghost effect
+            ogsRemoved.SetProjectionLineWeight(4);
+            ogsRemoved.SetCutLineWeight(4);
 
             if (existing != null)
             {
@@ -793,9 +803,27 @@ namespace Cabbe.Revit.Compare.Services
 
         private void CreateGhostDirectShapes(View view, IEnumerable<ComparisonItem> removedItems, RevitLinkInstance linkInstance, ElementId? fillId)
         {
+            var existingMap = new Dictionary<string, DirectShape>();
+            try
+            {
+                var directShapes = new FilteredElementCollector(_doc)
+                    .OfClass(typeof(DirectShape))
+                    .Cast<DirectShape>()
+                    .Where(ds => ds.Name.StartsWith("CabbeCompare_Deleted_"));
+                foreach (var ds in directShapes)
+                {
+                    existingMap[ds.Name] = ds;
+                }
+            }
+            catch { }
+
             foreach (var item in removedItems)
             {
-                GetOrCreateGhostDirectShape(view, item, linkInstance, fillId);
+                try
+                {
+                    GetOrCreateGhostDirectShape(view, item, linkInstance, fillId, existingMap);
+                }
+                catch { }
             }
         }
 
