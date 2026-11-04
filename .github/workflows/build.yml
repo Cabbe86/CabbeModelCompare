@@ -15,16 +15,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        revit_version: ['2025', '2026', '2027']
+        include:
+          - revit_version: '2025'
+            dotnet_version: '8.0.x'
+            target_framework: 'net8.0-windows7.0'
+          - revit_version: '2026'
+            dotnet_version: '8.0.x'
+            target_framework: 'net8.0-windows7.0'
+          - revit_version: '2027'
+            dotnet_version: '10.0.x'
+            target_framework: 'net10.0-windows7.0'
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup .NET 8 SDK
+    - name: Setup .NET SDK
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: 8.0.x
+        dotnet-version: ${{ matrix.dotnet_version }}
 
     - name: Restore dependencies
       run: dotnet restore src/CabbeModelCompare/CabbeModelCompare.csproj /p:RevitVersion=${{ matrix.revit_version }}
@@ -36,7 +45,7 @@ jobs:
       shell: bash
       run: |
         mkdir -p output/Revit${{ matrix.revit_version }}
-        cp src/CabbeModelCompare/bin/Release/net8.0-windows/CabbeModelCompare_${{ matrix.revit_version }}.dll output/Revit${{ matrix.revit_version }}/CabbeModelCompare.dll
+        cp src/CabbeModelCompare/bin/Release/${{ matrix.target_framework }}/CabbeModelCompare_${{ matrix.revit_version }}.dll output/Revit${{ matrix.revit_version }}/CabbeModelCompare.dll
         cp src/CabbeModelCompare/CabbeModelCompare.addin output/Revit${{ matrix.revit_version }}/CabbeModelCompare.addin
         cp src/Install-Addin.bat output/Revit${{ matrix.revit_version }}/Install-Addin.bat
 
