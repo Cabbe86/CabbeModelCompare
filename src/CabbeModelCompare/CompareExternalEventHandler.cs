@@ -158,8 +158,17 @@ namespace Cabbe.Revit.Compare
                                 }
                             }
 
-                            // 1. Bytt alltid till lämplig PLANVY (Floor Plan) istället för 3D-vy
-                            ViewPlan? targetPlan = engine.FindBestFloorPlanView(hostElem, targetBbox);
+                            // 1. Hitta rätt planvy (använd länkobjektet om hostElem är borttaget)
+                            Element? targetElemForLevel = hostElem;
+                            if (targetElemForLevel == null && TargetItem.Status == ComparisonStatus.Removed && SelectedLink != null)
+                            {
+                                Document linkDoc = SelectedLink.GetLinkDocument();
+                                if (TargetItem.LinkId != null) targetElemForLevel = linkDoc?.GetElement(TargetItem.LinkId);
+                                if (targetElemForLevel == null && !string.IsNullOrEmpty(TargetItem.UniqueId))
+                                    targetElemForLevel = linkDoc?.GetElement(TargetItem.UniqueId);
+                            }
+
+                            ViewPlan? targetPlan = engine.FindBestFloorPlanView(targetElemForLevel, targetBbox);
                             if (targetPlan != null)
                             {
                                 bool isAlreadyTargetPlan = uidoc.ActiveView is ViewPlan activePlan &&
