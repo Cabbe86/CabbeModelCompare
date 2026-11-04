@@ -421,13 +421,24 @@ namespace Cabbe.Revit.Compare.Services
 
             if (planViews.Count == 0) return null;
 
+            var allLevels = new FilteredElementCollector(_doc)
+                .OfClass(typeof(Level))
+                .Cast<Level>()
+                .OrderBy(l => l.Elevation)
+                .ToList();
+
             Level? targetLevel = null;
             if (elem != null)
             {
+                Document elemDoc = elem.Document;
                 ElementId levelId = elem.LevelId;
                 if (levelId != null && levelId != ElementId.InvalidElementId)
                 {
-                    targetLevel = _doc.GetElement(levelId) as Level;
+                    if (elemDoc.GetElement(levelId) is Level lvlInDoc)
+                    {
+                        targetLevel = allLevels.FirstOrDefault(l => l.Name.Equals(lvlInDoc.Name, StringComparison.OrdinalIgnoreCase))
+                                   ?? allLevels.OrderBy(l => Math.Abs(l.Elevation - lvlInDoc.Elevation)).FirstOrDefault();
+                    }
                 }
 
                 if (targetLevel == null)
@@ -435,8 +446,8 @@ namespace Cabbe.Revit.Compare.Services
                     BuiltInParameter[] levelParams = new[]
                     {
                         BuiltInParameter.SCHEDULE_LEVEL_PARAM,
-                        BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM,
                         BuiltInParameter.WALL_BASE_CONSTRAINT,
+                        BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM,
                         BuiltInParameter.FAMILY_LEVEL_PARAM,
                         BuiltInParameter.LEVEL_PARAM,
                         BuiltInParameter.ROOF_BASE_LEVEL_PARAM
@@ -448,10 +459,11 @@ namespace Cabbe.Revit.Compare.Services
                         if (p != null && p.StorageType == StorageType.ElementId)
                         {
                             ElementId id = p.AsElementId();
-                            if (id != null && id != ElementId.InvalidElementId && _doc.GetElement(id) is Level lvl)
+                            if (id != null && id != ElementId.InvalidElementId && elemDoc.GetElement(id) is Level lvlInDoc)
                             {
-                                targetLevel = lvl;
-                                break;
+                                targetLevel = allLevels.FirstOrDefault(l => l.Name.Equals(lvlInDoc.Name, StringComparison.OrdinalIgnoreCase))
+                                           ?? allLevels.OrderBy(l => Math.Abs(l.Elevation - lvlInDoc.Elevation)).FirstOrDefault();
+                                if (targetLevel != null) break;
                             }
                         }
                     }
@@ -460,25 +472,14 @@ namespace Cabbe.Revit.Compare.Services
 
             if (targetLevel == null && bbox != null)
             {
-                double targetZ = (bbox.Min.Z + bbox.Max.Z) * 0.5;
-                var allLevels = new FilteredElementCollector(_doc)
-                    .OfClass(typeof(Level))
-                    .Cast<Level>()
-                    .OrderBy(l => l.Elevation)
-                    .ToList();
+                // Använd objektets basnivå (Min.Z) istället för mittpunkten för att inte välja våningen ovanför
+                double baseZ = bbox.Min.Z;
+                var levelBelow = allLevels
+                    .Where(l => l.Elevation <= baseZ + 1.5) // ~450 mm tolerans för sockel/offset
+                    .OrderByDescending(l => l.Elevation)
+                    .FirstOrDefault();
 
-                Level? bestLvl = null;
-                double minDiff = double.MaxValue;
-                foreach (var lvl in allLevels)
-                {
-                    double diff = Math.Abs(lvl.Elevation - targetZ);
-                    if (diff < minDiff)
-                    {
-                        minDiff = diff;
-                        bestLvl = lvl;
-                    }
-                }
-                targetLevel = bestLvl;
+                targetLevel = levelBelow ?? allLevels.FirstOrDefault();
             }
 
             if (targetLevel != null)
@@ -613,8 +614,32 @@ namespace Cabbe.Revit.Compare.Services
 
             if (existing != null)
             {
-                try { view.SetElementOverrides(existing.Id, ogsRemoved); } catch { }
-                return existing;
+                // Kontrollera att det befintliga spökobjektet faktiskt har geometri
+                bool hasGeometry = false;
+                try
+                {
+                    var geom = existing.get_Geometry(new Options());
+                    if (geom != null)
+                    {
+                        foreach (var g in geom)
+                        {
+                            if (g is Solid s && s.Volume > 0.0001) { hasGeometry = true; break; }
+                        }
+                    }
+                }
+                catch { }
+
+                if (hasGeometry)
+                {
+                    try { view.SetElementOverrides(existing.Id, ogsRemoved); } catch { }
+                    return existing;
+                }
+                else
+                {
+                    // Ta bort tomt eller defekt spökobjekt från tidigare körning
+                    try { _doc.Delete(existing.Id); } catch { }
+                    existing = null;
+                }
             }
 
             Document linkDoc = linkInstance.GetLinkDocument();
@@ -667,6 +692,29 @@ namespace Cabbe.Revit.Compare.Services
             }
 
             if (boxMin == null || boxMax == null) return null;
+
+            // Säkerställ att boxen har tillräcklig bredd och alltid skär planvyns snittplan (1 200 mm över golv)
+            double bDx = Math.Abs(boxMax.X - boxMin.X);
+            double bDy = Math.Abs(boxMax.Y - boxMin.Y);
+            double bDz = Math.Abs(boxMax.Z - boxMin.Z);
+
+            if (bDx < 0.6)
+            {
+                double midX = (boxMin.X + boxMax.X) / 2.0;
+                boxMin = new XYZ(midX - 0.5, boxMin.Y, boxMin.Z);
+                boxMax = new XYZ(midX + 0.5, boxMax.Y, boxMax.Z);
+            }
+            if (bDy < 0.6)
+            {
+                double midY = (boxMin.Y + boxMax.Y) / 2.0;
+                boxMin = new XYZ(boxMin.X, midY - 0.5, boxMin.Z);
+                boxMax = new XYZ(boxMax.X, midY + 0.5, boxMax.Z);
+            }
+            // Om höjden är för låg (t.ex. plana dörröppningar eller 2D-element), ge den minst 2.2 m (7.2 fot) höjd
+            if (bDz < 6.0)
+            {
+                boxMax = new XYZ(boxMax.X, boxMax.Y, boxMin.Z + 7.2);
+            }
 
             // 2. Skapa en garanterat giltig 3D-solid (DirectShape Box)
             Solid? boxSolid = CreateBoxSolid(boxMin, boxMax);
