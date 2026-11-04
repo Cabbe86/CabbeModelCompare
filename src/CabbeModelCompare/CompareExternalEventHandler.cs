@@ -102,21 +102,59 @@ namespace Cabbe.Revit.Compare
                             {
                                 targetBbox = hostElem.get_BoundingBox(null);
                             }
-                            else if (TargetItem.Status == ComparisonStatus.Removed && SelectedLink != null && TargetItem.LinkId != null)
+                            else if (TargetItem.Status == ComparisonStatus.Removed && SelectedLink != null)
                             {
                                 Document linkDoc = SelectedLink.GetLinkDocument();
-                                Element? linkElem = linkDoc?.GetElement(TargetItem.LinkId);
-                                BoundingBoxXYZ? rawBbox = linkElem?.get_BoundingBox(null);
-                                if (rawBbox != null)
+                                Element? linkElem = TargetItem.LinkId != null ? linkDoc?.GetElement(TargetItem.LinkId) : null;
+                                if (linkElem == null && !string.IsNullOrEmpty(TargetItem.UniqueId))
+                                {
+                                    linkElem = linkDoc?.GetElement(TargetItem.UniqueId);
+                                }
+
+                                if (linkElem != null)
                                 {
                                     Transform tr = SelectedLink.GetTotalTransform();
-                                    XYZ pMin = tr.OfPoint(rawBbox.Min);
-                                    XYZ pMax = tr.OfPoint(rawBbox.Max);
-                                    targetBbox = new BoundingBoxXYZ
+                                    BoundingBoxXYZ? rawBbox = null;
+                                    try { rawBbox = linkElem.get_BoundingBox(null); } catch { }
+
+                                    if (rawBbox != null)
                                     {
-                                        Min = new XYZ(Math.Min(pMin.X, pMax.X), Math.Min(pMin.Y, pMax.Y), Math.Min(pMin.Z, pMax.Z)),
-                                        Max = new XYZ(Math.Max(pMin.X, pMax.X), Math.Max(pMin.Y, pMax.Y), Math.Max(pMin.Z, pMax.Z))
-                                    };
+                                        XYZ[] pts = new XYZ[8]
+                                        {
+                                            tr.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Min.Y, rawBbox.Min.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Min.Y, rawBbox.Min.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Max.Y, rawBbox.Min.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Max.Y, rawBbox.Min.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Min.Y, rawBbox.Max.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Min.Y, rawBbox.Max.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Min.X, rawBbox.Max.Y, rawBbox.Max.Z)),
+                                            tr.OfPoint(new XYZ(rawBbox.Max.X, rawBbox.Max.Y, rawBbox.Max.Z)),
+                                        };
+                                        targetBbox = new BoundingBoxXYZ
+                                        {
+                                            Min = new XYZ(pts.Min(p => p.X), pts.Min(p => p.Y), pts.Min(p => p.Z)),
+                                            Max = new XYZ(pts.Max(p => p.X), pts.Max(p => p.Y), pts.Max(p => p.Z))
+                                        };
+                                    }
+                                    else if (linkElem.Location is LocationPoint lp)
+                                    {
+                                        XYZ pt = tr.OfPoint(lp.Point);
+                                        targetBbox = new BoundingBoxXYZ
+                                        {
+                                            Min = new XYZ(pt.X - 1.5, pt.Y - 1.5, pt.Z),
+                                            Max = new XYZ(pt.X + 1.5, pt.Y + 1.5, pt.Z + 7.0)
+                                        };
+                                    }
+                                    else if (linkElem.Location is LocationCurve lc)
+                                    {
+                                        XYZ p0 = tr.OfPoint(lc.Curve.GetEndPoint(0));
+                                        XYZ p1 = tr.OfPoint(lc.Curve.GetEndPoint(1));
+                                        targetBbox = new BoundingBoxXYZ
+                                        {
+                                            Min = new XYZ(Math.Min(p0.X, p1.X) - 0.5, Math.Min(p0.Y, p1.Y) - 0.5, Math.Min(p0.Z, p1.Z)),
+                                            Max = new XYZ(Math.Max(p0.X, p1.X) + 0.5, Math.Max(p0.Y, p1.Y) + 0.5, Math.Max(p0.Z, p1.Z) + 8.0)
+                                        };
+                                    }
                                 }
                             }
 
