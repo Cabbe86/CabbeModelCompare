@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build for Revit ${{ matrix.revit_version }}
@@ -54,3 +57,33 @@ jobs:
       with:
         name: CabbeModelCompare-Revit-${{ matrix.revit_version }}
         path: output/Revit${{ matrix.revit_version }}
+
+  release:
+    name: Attach to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create Zip Files
+      run: |
+        mkdir -p release-zips
+        cd artifacts
+        for folder in CabbeModelCompare-Revit-*; do
+          zip -j "../release-zips/${folder}.zip" "$folder"/*
+        done
+        cd ..
+        ls -la release-zips/
+
+    - name: Upload Zip Assets to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.0.0
+        files: release-zips/*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
