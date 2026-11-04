@@ -15,29 +15,40 @@ namespace Cabbe.Revit.Compare
             }
             catch
             {
-                // Fliken kan redan finnas från ett annat Cabbe-tillägg
+                // Fliken kan redan finnas från pyRevit eller ett annat Cabbe-tillägg
             }
 
             RibbonPanel? panel = null;
-            var panels = application.GetRibbonPanels(tabName);
-            foreach (var p in panels)
+            try
             {
-                if (p.Name == "Jämförelse")
+                var panels = application.GetRibbonPanels(tabName);
+                foreach (var p in panels)
                 {
-                    panel = p;
-                    break;
+                    if (p.Name.Equals("Compare", StringComparison.OrdinalIgnoreCase))
+                    {
+                        panel = p;
+                        break;
+                    }
                 }
             }
+            catch { }
 
             if (panel == null)
             {
-                panel = application.CreateRibbonPanel(tabName, "Jämförelse");
+                try
+                {
+                    panel = application.CreateRibbonPanel(tabName, "Compare");
+                }
+                catch
+                {
+                    panel = application.CreateRibbonPanel("Compare");
+                }
             }
 
             string thisAssemblyPath = Assembly.GetExecutingAssembly().Location;
             PushButtonData buttonData = new PushButtonData(
-                "cmdModelCompare",
-                "Modell-\njämförelse",
+                "cmdCabbeModelCompare",
+                "Model\nCompare",
                 thisAssemblyPath,
                 "Cabbe.Revit.Compare.Command"
             )
