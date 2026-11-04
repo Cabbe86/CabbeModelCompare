@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Cabbe Model Compare</Name>
+    <Assembly>CabbeModelCompare.dll</Assembly>
+    <FullClassName>Cabbe.Revit.Compare.App</FullClassName>
+    <ClientId>A89F3B14-5E47-49F1-92D1-5C682B141201</ClientId>
+    <VendorId>SE.CABBE</VendorId>
+    <VendorDescription>Cabbe BIM Tools</VendorDescription>
+  </AddIn>
+</RevitAddIns>
