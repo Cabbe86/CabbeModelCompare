@@ -253,17 +253,11 @@ namespace Cabbe.Revit.Compare.UI
         {
             if (GridItems.SelectedItem is ComparisonItem item)
             {
-                if (item.HostId != null && item.HostId != ElementId.InvalidElementId)
-                {
-                    _eventHandler.TargetElementId = item.HostId;
-                    _eventHandler.PendingAction = CompareAction.SelectAndZoom;
-                    _externalEvent.Raise();
-                }
-                else if (item.Status == ComparisonStatus.Removed)
-                {
-                    MessageBox.Show("Objektet är borttaget ur den aktiva modellen (finns endast i den länkade modellen).\nKlicka på 'Färga vy' för att se dess röda placering i modellen.", 
-                                    "Borttaget objekt", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
+                _eventHandler.TargetItem = item;
+                _eventHandler.TargetElementId = item.HostId;
+                _eventHandler.SelectedLink = GetSelectedLink();
+                _eventHandler.PendingAction = CompareAction.SelectAndZoom;
+                _externalEvent.Raise();
             }
         }
 
